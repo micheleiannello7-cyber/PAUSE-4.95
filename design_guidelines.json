@@ -1,0 +1,109 @@
+{
+  "project_name": "Pause App - Refined Category Art & Optical Sizing",
+  "app_type": "mobile_web_app",
+  "framework": "Expo React Native / Web (.js / .tsx)",
+  "overview": "Refinement guidelines for category artwork recognizable replacements, Dachshund vitality update, optical icon scaling across Home and Topics screens, and Curiosità content integration without altering core palettes or fonts.",
+  "category_artwork_guidelines": {
+    "retained_artwork": [
+      {
+        "category": "Spazio",
+        "subject": "Saturn",
+        "status": "APPROVED_UNCHANGED"
+      },
+      {
+        "category": "Tecnologia",
+        "subject": "Microchip",
+        "status": "APPROVED_UNCHANGED"
+      },
+      {
+        "category": "Storia",
+        "subject": "Classical Column",
+        "status": "APPROVED_UNCHANGED"
+      },
+      {
+        "category": "Psicologia",
+        "subject": "Human Brain",
+        "status": "APPROVED_UNCHANGED"
+      },
+      {
+        "category": "Corpo Umano",
+        "subject": "DNA Helix",
+        "status": "APPROVED_UNCHANGED"
+      }
+    ],
+    "revised_artwork": [
+      {
+        "category": "Animali",
+        "subject": "Dachshund",
+        "refinement": "More alive and organic styling, warm fur highlights, expressively animated eyes, eliminating frozen glass statue appearance."
+      }
+    ],
+    "recognizable_art_replacements": [
+      {
+        "category": "Scienza",
+        "subject": "Beuta / Lab Flask",
+        "details": "Erlenmeyer flask with glowing vibrant liquid and subtle rising bubbles."
+      },
+      {
+        "category": "Natura",
+        "subject": "Lush Tree",
+        "details": "Organic tree silhouette with multi-layered canopy foliage."
+      },
+      {
+        "category": "Cultura",
+        "subject": "Open Book",
+        "details": "Classic open book with fanning pages and subtle central illumination."
+      },
+      {
+        "category": "Economia",
+        "subject": "Stacked Coins",
+        "details": "Metallic currency coins stacked in three-quarter perspective with edge sheen."
+      },
+      {
+        "category": "Arte",
+        "subject": "Artist Palette",
+        "details": "Painter palette with distinct color dabs and dynamic paintbrush."
+      },
+      {
+        "category": "Geografia",
+        "subject": "Globe",
+        "details": "3D-rendered globe sphere showing continents and latitude/longitude grid."
+      }
+    ],
+    "curiosita_status": {
+      "status": "RETIRED",
+      "action": "All 28 real stories and lessons seamlessly reassigned into primary semantic categories (Scienza, Storia, Natura, Cultura, Tecnologia, etc.). No dedicated Curiosità card required."
+    }
+  },
+  "optical_sizing_and_layout": {
+    "home_screen_cards": {
+      "container_size": "96px square touchable card",
+      "artwork_scaling": "Reduce artwork subject bounding box to ~68px-72px (approx 70-75% of container height) to create negative space around edges.",
+      "text_alignment": "Category name and lesson count placed cleanly below/around art with text-xs/text-sm hierarchy and min 4.5:1 contrast."
+    },
+    "topics_explore_screen_cards": {
+      "card_grid_width": "31.5% column width",
+      "aspect_ratio": "0.86",
+      "artwork_scaling": "Scale internal SVG/illustration subject down by 15-20% relative to card outer frame to avoid visual edge collisions.",
+      "padding_safety": "Minimum internal padding of 10px-12px (p-3) around icon center."
+    },
+    "surface_and_contrast_rules": {
+      "theme": "Dark atmosphere with coordinated app colors.",
+      "overlays_and_headers": "NO fully transparent backgrounds under active text/navigation. Use backdrop-blur with minimum bg-slate-900/80 or dark solid fill.",
+      "card_borders": "1px subtle semi-transparent border (rgba(255, 255, 255, 0.1)) to define touch bounds without heavy shadows."
+    }
+  },
+  "general_ui_ux_design_guidelines": {
+    "testing_attributes": "All interactive buttons, category cards, navigation links, and story cards MUST contain data-testid attributes (e.g., data-testid=\"category-card-scienza\", data-testid=\"topic-filter-item\").",
+    "typography": "Use established app typography system with strict size hierarchy (H1 max text-4xl/5xl, body text-sm/base, overlines text-xs with tracking-wider).",
+    "motion": "Apply micro-interactions on touch/hover states (scale: 0.98 on press, smooth opacity transitions). Respect prefers-reduced-motion.",
+    "accessibility": "Ensure text contrast meets APCA/WCAG AA standards against dark background surfaces."
+  },
+  "instructions_to_main_agent": [
+    "Verify category-artwork rendering uses the newly specified recognizable symbols (Beuta for Scienza, Tree for Natura, Open Book for Cultura, Stacked Coins for Economia, Palette for Arte, Globe for Geografia).",
+    "Ensure Dachshund artwork in Animali category renders with warm organic liveliness.",
+    "Adjust icon dimensions inside category-artwork renderers so icons are scaled slightly smaller (70-75% card bounds) on Home and Topics screens.",
+    "Ensure all category touchcards include valid data-testid props.",
+    "Maintain dark theme background fill on headers and overlays (no transparent floating panels)."
+  ]
+}

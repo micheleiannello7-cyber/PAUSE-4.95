@@ -1,0 +1,255 @@
+// PAUSE — API client. Uses Expo config with the public env fallback.
+import Constants from "expo-constants";
+const BASE = Constants.expoConfig?.extra?.backendUrl ?? process.env.EXPO_PUBLIC_BACKEND_URL;
+if (!BASE) {
+  // Fail loudly at startup instead of producing "undefined/api/..." requests
+  // that surface as a generic network error much later.
+  console.error("[PAUSE] EXPO_PUBLIC_BACKEND_URL is not set in frontend/.env — API calls will fail.");
+}
+
+// Current content language — set by the I18nProvider. Appended to every GET.
+let currentLang = "it";
+export function setApiLang(lang: string) {
+  currentLang = lang;
+}
+export function getApiLang() {
+  return currentLang;
+}
+
+// Abort a request that stalls so a flaky connection never traps the UI on a
+// spinner forever (react-query can then retry / surface an error state).
+const REQUEST_TIMEOUT_MS = 15000;
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(status: number, path: string, code?: string) {
+    super(`API ${status} ${path}`);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+  const isGet = !opts?.method || opts.method === "GET";
+  const url = isGet ? `${BASE}/api${path}${path.includes("?") ? "&" : "?"}lang=${currentLang}` : `${BASE}/api${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      ...opts,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(opts?.headers ?? {}) },
+    });
+    if (!res.ok) {
+      let code: string | undefined;
+      try {
+        const body = await res.json();
+        code = typeof body?.detail === "object" ? body.detail?.code : undefined;
+      } catch {}
+      throw new ApiError(res.status, path, code);
+    }
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export type Category = {
+  id: string;
+  name: string;
+  story_count: number;
+  lesson_count: number;
+  icon: string;
+  color: string;
+  emoji_key: string;
+  illustration_generated?: string | null;
+};
+
+// URL for a category illustration (AI generated).
+export function categoryIllustrationUrl(cat: Pick<Category, "id" | "illustration_generated">): string | null {
+  if (!cat.illustration_generated) return null;
+  return categoryArtworkUrl(cat.id, cat.illustration_generated);
+}
+
+export function categoryArtworkUrl(id: string, version: string): string {
+  return `${BASE}/api/category-media/${encodeURIComponent(id)}?v=${encodeURIComponent(version)}`;
+}
+
+export type Chapter = {
+  number: number;
+  title: string;
+  body: string;
+  icon: string;
+  glow_color: string;
+};
+
+export type StoryPreview = {
+  id: string;
+  category_id: string;
+  category_name: string;
+  category_icon: string;
+  category_color: string;
+  title: string;
+  highlight_words: string[];
+  hook: string;
+  hero_image: string;
+  hero_image_generated?: string | null;
+  reading_time_min: number;
+  deep_dive_time_min: number;
+  kind?: "story" | "lesson";
+  objective?: string | null;
+  is_new?: boolean;
+};
+
+export type StoryRecap = StoryPreview & { summary: string };
+
+export type Story = StoryPreview & {
+  chapters: Chapter[];
+  summary: string;
+};
+
+export type UserState = {
+  user_id: string;
+  interests: string[];
+  completed_story_ids: string[];
+  bookmarked_story_ids: string[];
+  liked_story_ids: string[];
+  session_count: number;
+  total_minutes: number;
+  streak_days: number;
+  best_streak: number;
+  last_active_date: string | null;
+  limit_enabled: boolean;
+  is_premium: boolean;
+  listen_seconds: number;
+  unlocked_categories: string[];
+  content_modes: ("stories" | "lessons")[];
+  theme_mode?: "light" | "dark" | "system" | null;
+  theme_accent?: string | null;
+  lang?: "it" | "en" | null;
+};
+
+export type Playlist = { minutes: number; total_min: number; stories: StoryPreview[] };
+
+export type StatsCategory = {
+  id: string; name: string; icon: string; color: string; read: number; total: number; ratio: number;
+};
+export type Badge = {
+  id: string; icon: string; title: string; description: string; target: number; value: number; unlocked: boolean;
+};
+export type Stats = {
+  stories: number;
+  minutes: number;
+  listen_minutes: number;
+  streak_days: number;
+  best_streak: number;
+  categories_explored: number;
+  categories_total: number;
+  categories: StatsCategory[];
+  history: { date: string; active: boolean }[];
+  badges: Badge[];
+  badges_unlocked: number;
+  month: {
+    key: string; stories: number; minutes: number; listen_minutes: number;
+    active_days: number; categories: number; top_category: StatsCategory | null;
+  };
+};
+
+export type VoiceId = "nova" | "onyx" | "echo" | "shimmer";
+export const VOICES: VoiceId[] = ["nova", "onyx", "echo", "shimmer"];
+export const FREE_VOICE: VoiceId = "nova";
+export const FREE_SAVED_LIMIT = 20;
+
+// True when the story has any cover to show (AI generated or curated photo).
+export function hasHero(story: StoryPreview | Story): boolean {
+  return !!story.hero_image_generated || !!story.hero_image;
+}
+
+// Mini lessons: guided step-by-step content (kind="lesson" + objective).
+export function isLesson(story: StoryPreview | Story): boolean {
+  return story.kind === "lesson";
+}
+
+// Prefers AI-generated hero (via /api/media/{id}) with fallback to the
+// curated Unsplash URL.
+export function heroUrl(story: StoryPreview | Story): string {
+  if (story.hero_image_generated) {
+    return `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/media/${story.id}`;
+  }
+  return story.hero_image;
+}
+
+export function ttsUrl(storyId: string, opts?: { voice?: VoiceId; preview?: boolean }): string {
+  const qs = new URLSearchParams({ lang: currentLang });
+  if (opts?.voice && opts.voice !== FREE_VOICE) qs.set("voice", opts.voice);
+  if (opts?.preview) qs.set("preview", "true");
+  return `${BASE}/api/tts/story/${storyId}?${qs.toString()}`;
+}
+
+export function voiceSampleUrl(voice: VoiceId): string {
+  return `${BASE}/api/tts/voice-sample?voice=${voice}&lang=${currentLang}`;
+}
+
+export const api = {
+  categories: () => req<Category[]>("/categories"),
+  stories: (params?: { category_id?: string; interests?: string[]; limit?: number; user_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.category_id) qs.set("category_id", params.category_id);
+    if (params?.interests?.length) qs.set("interests", params.interests.join(","));
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.user_id) qs.set("user_id", params.user_id);
+    const s = qs.toString();
+    return req<StoryPreview[]>(`/stories${s ? "?" + s : ""}`);
+  },
+  discoverNext: (user_id: string, interests?: string[], exclude?: string[]) => {
+    const qs = new URLSearchParams({ user_id });
+    if (interests?.length) qs.set("interests", interests.join(","));
+    if (exclude?.length) qs.set("exclude", exclude.join(","));
+    return req<StoryPreview>(`/discover-next?${qs.toString()}`);
+  },
+  story: (id: string) => req<Story>(`/stories/${id}`),
+  related: (id: string) => req<StoryPreview[]>(`/stories/${id}/related`),
+  nextStory: (id: string, user_id?: string) =>
+    req<StoryPreview>(`/stories/${id}/next${user_id ? `?user_id=${user_id}` : ""}`),
+  playlist: (user_id: string, minutes = 10) => req<Playlist>(`/playlist?user_id=${user_id}&minutes=${minutes}`),
+  user: (id: string) => req<UserState>(`/user/${id}`),
+  stats: (id: string) => req<Stats>(`/user/${id}/stats`),
+  bookmarks: (id: string) => req<StoryPreview[]>(`/user/${id}/bookmarks`),
+  sessionStories: (id: string) => req<StoryRecap[]>(`/user/${id}/session-stories`),
+  setInterests: (user_id: string, interests: string[]) =>
+    req<UserState>(`/user/interests`, { method: "POST", body: JSON.stringify({ user_id, interests }) }),
+  setPremium: (user_id: string, active: boolean) =>
+    req<UserState>(`/user/premium`, { method: "POST", body: JSON.stringify({ user_id, active }) }),
+  setContentModes: (user_id: string, modes: ("stories" | "lessons")[]) =>
+    req<UserState>(`/user/content-modes`, { method: "POST", body: JSON.stringify({ user_id, modes }) }),
+  createPurchase: (user_id: string, category_id: string, return_url: string) =>
+    req<{ purchase_id: string; checkout_url: string }>(`/purchases`, {
+      method: "POST", body: JSON.stringify({ user_id, category_id, return_url }),
+    }),
+  purchaseStatus: (purchase_id: string) =>
+    req<{ purchase_id: string; user_id: string; category_id: string; status: "pending" | "paid" | "cancelled" | "error" }>(
+      `/purchases/${purchase_id}`,
+    ),
+  setLimitEnabled: (user_id: string, enabled: boolean) =>
+    req<UserState>(`/user/limit-setting`, { method: "POST", body: JSON.stringify({ user_id, enabled }) }),
+  setPreferences: (user_id: string, prefs: { theme_mode?: string; theme_accent?: string; lang?: string }) =>
+    req<UserState>(`/user/preferences`, { method: "POST", body: JSON.stringify({ user_id, ...prefs }) }),
+  toggleBookmark: (user_id: string, story_id: string) =>
+    req<UserState>(`/user/bookmark`, { method: "POST", body: JSON.stringify({ user_id, story_id }) }),
+  toggleLike: (user_id: string, story_id: string) =>
+    req<UserState>(`/user/like`, { method: "POST", body: JSON.stringify({ user_id, story_id }) }),
+  complete: (user_id: string, story_id: string, minutes = 2, seconds = 0) =>
+    req<UserState>(`/user/complete`, { method: "POST", body: JSON.stringify({ user_id, story_id, minutes, seconds }) }),
+  listen: (user_id: string, story_id: string, seconds: number) =>
+    req<UserState>(`/user/listen`, { method: "POST", body: JSON.stringify({ user_id, story_id, seconds }) }),
+  limitCheck: (user_id: string) =>
+    req<{ enforce: boolean; session_count: number; session_seconds: number; limit: number; is_premium: boolean; reached: boolean; blocked: boolean; blocked_until?: string | null; remaining_seconds?: number }>(
+      `/user/${user_id}/limit-check`,
+    ),
+  warmupTts: (story_id: string, voice?: VoiceId) =>
+    req<{ story_id: string; status: string }>(
+      `/tts/warmup/${story_id}${voice && voice !== FREE_VOICE ? `?voice=${voice}` : ""}`,
+      { method: "POST" },
+    ),
+};
