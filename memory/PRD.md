@@ -79,3 +79,49 @@ App mobile (Expo + FastAPI + MongoDB) di micro-apprendimento: curiosità e mini-
   Report `/app/test_reports/iteration_25.json` e suite `backend/tests/test_iter25_curiosita_migration.py`.
 - P1: configurare Stripe quando disponibile.
 - P2: bundle identifier in `app.json` (`com.emergent.appopinionplatform.tcl8qx`) da confermare.
+
+## Gestione asset multimediali — 22/09/2026 (sessione asset)
+### Richiesta utente
+Analizzare e ottimizzare TTS/immagini/storage/caching prima della release: audio generato una sola volta per
+storia+capitolo+lingua+voce+versione contenuto, URL persistenti su storage, Mongo solo metadati, caching CDN/client,
+copertine remote WebP, niente audio/copertine nel bundle, nessuna chiamata TTS duplicata. Poi: limare tutte le
+storie a max 4 minuti di audio senza alterarne i contenuti.
+
+### Stato trovato (fork)
+- `backend/.env` del fork aveva solo MONGO_URL/DB_NAME → storage inaccessibile → icone 3D categorie in fallback.
+  Ripristinati EMERGENT_LLM_KEY, ENFORCE_LIMIT=false, STRIPE_*/ELEVENLABS_API_KEY vuoti. Bucket storage del fork vuoto:
+  `restore_category_art.py` ricarica le 13 illustrazioni agli stessi path del manifest (nessuna rigenerazione AI).
+- Bundle app già leggero (~1.5 MB). Il peso era nel repo: 76 MB di mp3 in git + node_modules.
+- Audio: 1 mp3 per storia intera (capitoli inclusi, decisione confermata), chiave con tag versione fisso, disco per-pod.
+- Copertine storie: 0/437 generate, 167 Unsplash, 270 gradiente. 8 file in backend/covers/ orfani (ID inesistenti) → lasciati.
+
+### Implementato
+- `tts.py`: asset = storia+lingua+voce+kind+content_hash(testo narrato)+provider. Collezione Mongo `tts_assets`
+  (solo metadati: key, storage_path, size, provider, model, created_at, legacy_key). Lookup: Mongo → disco → storage →
+  provider (unico step a pagamento), lock per combinazione. 26 audio legacy **adottati** (mai rigenerati) via
+  `adopt_legacy_assets` allo startup (hardlink su disco, path storage legacy). Cache disco LRU (TTS_DISK_CACHE_MAX_MB=400).
+- Endpoint: `GET /api/tts/status/{id}?lang&voice&preview` (ready/generating/key/url versionato `?v=hash`, non genera);
+  `POST /api/tts/warmup` (idempotente, ora rispetta lang); `GET /api/tts/story` con ETag=key, 304, Range,
+  `immutable` solo se `v` coincide; `GET /api/content/assets-report`.
+- Immagini: `media_cache.py` (cache disco davanti allo storage, ETag/304, immutable); `/api/media/{id}?size=thumb`;
+  `media_opt.py` (WebP hero ≤1200 + thumb ≤600, path con digest); `covers_sync.py`/`upload_cover.py` usano l'ottimizzatore;
+  campo `hero_image_thumb`.
+- Frontend: player risolve l'audio via status → nessuna generazione finché l'utente non tocca Play (warm-up speculativo
+  rimosso dal deep-dive); polling generazione 2.5s; `audio-cache.ts` (nativo: copia in Paths.cache al primo ascolto,
+  riusata dopo); `heroUrl(story, "thumb")` + Unsplash w=600 per miniature; `cachePolicy="memory-disk"` ovunque.
+- Repo: `backend/tts_cache/`, `backend/media_cache/` in .gitignore, mp3 rimossi dal tracking git (restano su disco e
+  nello storage); 5 PNG inutilizzati rimossi da assets/images.
+- Test: `tests/test_tts_assets_cost_guard.py` (4 test offline: riuso, versione contenuto, concorrenza, adozione legacy).
+- Vincolo noto: il gateway della preview sovrascrive Cache-Control con no-store (già documentato iter24) — l'origine
+  invia header corretti; su build nativa la cache locale audio/immagini non dipende dal gateway.
+
+### Limatura storie (trim_stories.py)
+- 229 narrazioni (IT + EN con traduzione propria) sopra 4 min. Condensazione con gpt-5.4 (stesso modello del catalogo):
+  stessi titoli capitolo, stessi fatti, stessa lingua; validazione su `_estimated_audio_minutes` ≤ 4 e ≤2850 caratteri.
+- Backup originale in `stories_backup_pre_trim` (una volta per storia); `content_trimmed.{lang}` sulla storia;
+  `ensure_seed` non sovrascrive più hook/summary/chapters/translations delle storie trimmate.
+  Ripristino: `python trim_stories.py --restore <id>`.
+- Iteration26 (testing agent): backend 18/18, frontend flussi deep-dive/player/Home/Argomenti/Salvati OK; nessun warm-up
+  prima del tap; URL audio con `&v=`. Nota: `BottomFloatingMini` (mini.tsx) è esportato ma non montato — preesistente.
+- **Bloccante limatura**: budget Universal Key esaurito (max $1.00) dopo 54 narrazioni; 175 in attesa. Script idempotente:
+  rilanciare `python trim_stories.py` dopo la ricarica.

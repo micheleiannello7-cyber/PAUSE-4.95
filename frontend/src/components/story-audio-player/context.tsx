@@ -10,13 +10,18 @@ import { SharedValue, useSharedValue } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 
-import { api, getApiLang, ttsUrl, voiceSampleUrl, VoiceId, FREE_VOICE } from "@/src/api";
+import { api, getApiLang, voiceSampleUrl, VoiceId, FREE_VOICE, TtsStatus, absoluteUrl } from "@/src/api";
 import { usePremiumFlag } from "@/src/premium";
 import { useUserId } from "@/src/session";
 import { useAudioPrefs, getSavedPosition, savePosition, clearPosition } from "@/src/audio-prefs";
 import { OFFLINE_SUPPORTED, offlineKey, getOfflineUri, downloadOffline, removeOffline } from "@/src/offline-audio";
+import { getCachedAudioUri, cacheAudioInBackground } from "@/src/audio-cache";
 
 import { FREE_MAX_SPEED, FULL_HEIGHT, OfflineState, Panel, RESUME_MIN_SECONDS } from "./constants";
+
+// How often we ask the backend whether a first-time narration is ready.
+const GENERATION_POLL_MS = 2500;
+const GENERATION_TIMEOUT_MS = 4 * 60 * 1000;
 
 export type Ctx = {
   playing: boolean;
@@ -37,6 +42,8 @@ export type Ctx = {
   skip: (delta: number) => void;
   preview: boolean;
   resumeFrom: number | null;
+  /** True when the narration could not be generated right now (provider error). */
+  unavailable: boolean;
   offline: OfflineState;
   download: () => void;
   removeDownload: () => void;
@@ -75,13 +82,35 @@ export function StoryAudioProvider({
   const [localUri, setLocalUri] = useState<string | null>(() => getOfflineUri(offKey));
   useEffect(() => { setLocalUri(getOfflineUri(offKey)); }, [offKey]);
 
-  const source = useMemo(
-    () => ({ uri: localUri ?? ttsUrl(storyId, { voice, preview }) }),
-    [storyId, voice, preview, localUri],
-  );
+  // --- Asset resolution ----------------------------------------------------
+  // Ask the backend whether this story+lang+voice+content already has audio.
+  // Nothing is generated until the listener actually taps play (no
+  // speculative TTS cost); once generated the URL is persistent and cached.
+  const [status, setStatus] = useState<TtsStatus | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [wantPlay, setWantPlay] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setStatus(null);
+    setUnavailable(false);
+    api.ttsStatus(storyId, { voice, preview }).then((s) => { if (alive) setStatus(s); }).catch(() => {});
+    return () => { alive = false; };
+  }, [storyId, lang, voice, preview]);
+
+  // Previews are a few seconds of speech: the server renders them inline.
+  const remoteUrl = status && (status.ready || preview) ? absoluteUrl(status.url) : null;
+  const cacheKey = status?.ready ? status.key : null;
+  const [cachedUri, setCachedUri] = useState<string | null>(null);
+  useEffect(() => { setCachedUri(cacheKey ? getCachedAudioUri(cacheKey) : null); }, [cacheKey]);
+
+  const source = useMemo(() => {
+    const uri = localUri ?? cachedUri ?? remoteUrl;
+    return uri ? { uri } : null;
+  }, [localUri, cachedUri, remoteUrl]);
 
   const player = useAudioPlayer(source);
-  const status = useAudioPlayerStatus(player);
+  const status_ = useAudioPlayerStatus(player);
   const samplePlayer = useAudioPlayer();
   const [starting, setStarting] = useState(false);
   const [panel, setPanel] = useState<Panel>("none");
@@ -93,6 +122,7 @@ export function StoryAudioProvider({
   const firstSourceRef = useRef(true);
   useEffect(() => {
     if (firstSourceRef.current) { firstSourceRef.current = false; return; }
+    if (!source) return;
     try { player.replace(source); } catch {}
   }, [player, source]);
 
@@ -113,12 +143,51 @@ export function StoryAudioProvider({
     try { player.setPlaybackRate(rate, "high"); } catch {}
   }, [player, rate, source]);
 
-  const isLoaded = status.isLoaded;
-  const duration = isLoaded && isFinite(status.duration) ? status.duration : 0;
-  const position = isLoaded ? status.currentTime : 0;
-  const playing = !!status.playing;
-  const buffering = starting || !isLoaded;
+  const isLoaded = !!source && status_.isLoaded;
+  const duration = isLoaded && isFinite(status_.duration) ? status_.duration : 0;
+  const position = isLoaded ? status_.currentTime : 0;
+  const playing = !!status_.playing;
+  const buffering = starting || generating || (!!source && !isLoaded);
   const progress = duration > 0 ? Math.min(1, Math.max(0, position / duration)) : 0;
+
+  // Fill the local cache once, the first time this asset actually plays, so
+  // the next session never re-downloads it (native only; web = HTTP cache).
+  useEffect(() => {
+    if (!playing || preview || !cacheKey || cachedUri || localUri || !remoteUrl) return;
+    cacheAudioInBackground(cacheKey, remoteUrl);
+  }, [playing, preview, cacheKey, cachedUri, localUri, remoteUrl]);
+
+  // First-ever listen of this content version: request generation and poll
+  // until the persistent asset exists. Concurrent listeners share one job
+  // server-side; the provider is called exactly once per combination.
+  const ensureAudio = useCallback(async (): Promise<TtsStatus | null> => {
+    if (status?.ready) return status;
+    setGenerating(true);
+    setUnavailable(false);
+    try {
+      await api.warmupTts(storyId, voice);
+      const deadline = Date.now() + GENERATION_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, GENERATION_POLL_MS));
+        const s = await api.ttsStatus(storyId, { voice, preview });
+        if (s.ready) { setStatus(s); return s; }
+        if (s.error && !s.generating) break; // provider failed: stop waiting
+      }
+      setUnavailable(true);
+      return null;
+    } catch {
+      setUnavailable(true);
+      return null;
+    } finally {
+      setGenerating(false);
+    }
+  }, [status, storyId, voice, preview]);
+
+  useEffect(() => {
+    if (!wantPlay || !isLoaded) return;
+    setWantPlay(false);
+    try { player.play(); } catch {}
+  }, [wantPlay, isLoaded, player]);
 
   // --- Exact resume (Premium) ---------------------------------------------
   const restoredRef = useRef<string | null>(null);
@@ -145,22 +214,23 @@ export function StoryAudioProvider({
   // --- End of track --------------------------------------------------------
   const finishedRef = useRef(false);
   useEffect(() => {
-    if (status.didJustFinish && !finishedRef.current) {
+    if (status_.didJustFinish && !finishedRef.current) {
       finishedRef.current = true;
       if (!preview) clearPosition(storyId, lang);
       setResumeFrom(null);
       onFinished?.();
     }
-    if (!status.didJustFinish && playing) finishedRef.current = false;
-  }, [status.didJustFinish, playing, preview, storyId, lang, onFinished]);
+    if (!status_.didJustFinish && playing) finishedRef.current = false;
+  }, [status_.didJustFinish, playing, preview, storyId, lang, onFinished]);
 
   // --- Autoplay (playlist) -------------------------------------------------
   const autoRef = useRef(false);
   useEffect(() => {
-    if (!autoplay || !isLoaded || autoRef.current) return;
+    if (!autoplay || autoRef.current || !status) return;
     autoRef.current = true;
-    try { player.play(); } catch {}
-  }, [autoplay, isLoaded, player]);
+    if (source) { setWantPlay(true); return; }
+    ensureAudio().then((s) => { if (s) setWantPlay(true); });
+  }, [autoplay, status, source, ensureAudio]);
 
   // --- Listening time → backend (flush every 30s and on unmount) -----------
   const listenedRef = useRef(0);
@@ -204,6 +274,15 @@ export function StoryAudioProvider({
   const togglePlay = async () => {
     Haptics.selectionAsync().catch(() => {});
     if (playing) { player.pause(); return; }
+    if (!source) {
+      // Nothing to play yet: generate once (or wait for a job in progress),
+      // then start as soon as the persistent asset is loaded.
+      if (!status || generating) return;
+      setWantPlay(true);
+      const s = await ensureAudio();
+      if (!s) setWantPlay(false);
+      return;
+    }
     setStarting(true);
     try {
       if (duration > 0 && position >= duration - 0.2) await player.seekTo(0);
@@ -224,7 +303,10 @@ export function StoryAudioProvider({
     if (offline !== "none") return;
     setOffline("downloading");
     try {
-      await downloadOffline(offKey, ttsUrl(storyId, { voice }));
+      const url = remoteUrl ?? (await ensureAudio().then((s) => (s ? absoluteUrl(s.url) : null)));
+      if (!url) throw new Error("audio unavailable");
+      await downloadOffline(offKey, url);
+      setLocalUri(getOfflineUri(offKey));
       setOffline("ready");
     } catch {
       setOffline("none");
@@ -242,7 +324,7 @@ export function StoryAudioProvider({
   const value: Ctx = {
     playing, duration, position, progress, isLoaded, buffering, isPremium,
     rate, setRate, voice, setVoice, playSample,
-    panel, setPanel, togglePlay, skip, preview, resumeFrom,
+    panel, setPanel, togglePlay, skip, preview, resumeFrom, unavailable,
     offline, download, removeDownload, cardScreenYSV, cardHeightSV,
   };
 

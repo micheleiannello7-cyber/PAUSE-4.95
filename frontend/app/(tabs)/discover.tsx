@@ -150,7 +150,7 @@ function ResumeCard({ progress, onPress }: { progress: ReadingProgress; onPress:
       <GlassSurface intensity="strong" glow glowColor={colors.cyanGlow} radiusOverride={radius.lg}>
         <View style={styles.resumeInner}>
           <View style={styles.resumeThumbWrap}>
-            <StoryHero story={progress.story} style={styles.resumeThumb} iconSize={26} />
+            <StoryHero story={progress.story} style={styles.resumeThumb} iconSize={26} size="thumb" />
             <View style={styles.resumeThumbGlow} />
           </View>
           <View style={styles.resumeInfo}>

@@ -113,10 +113,8 @@ export default function DeepDive() {
     return () => clearTimeout(timer);
   }, [userId, id]);
 
-  // Warm the narrated mp3 so the player starts instantly for everyone.
-  useEffect(() => {
-    if (id) api.warmupTts(id).catch(() => {});
-  }, [id]);
+  // Narration is resolved lazily by the audio player (status → persistent
+  // URL); nothing is generated until the listener taps play.
 
   useEffect(() => {
     if (!story) return;
@@ -372,7 +370,7 @@ function ImmersiveCover({ story, heightSV, maxHeight }: { story: Story; heightSV
     <Animated.View style={[styles.cover, box, { pointerEvents: "none" }]} testID="chapter-cover-bg">
       <Animated.View style={[styles.coverImage, { height: maxHeight }, breathe]}>
         {hasCover ? (
-          <Image source={{ uri: heroUrl(story) }} style={StyleSheet.absoluteFill} contentFit="cover" transition={400} />
+          <Image source={{ uri: heroUrl(story) }} style={StyleSheet.absoluteFill} contentFit="cover" transition={400} cachePolicy="memory-disk" />
         ) : (
           <LessonCover color={story.category_color} icon={story.category_icon} iconSize={72} showBadge={false} style={StyleSheet.absoluteFill} />
         )}

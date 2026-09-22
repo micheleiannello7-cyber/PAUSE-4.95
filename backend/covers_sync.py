@@ -7,10 +7,9 @@ storie che hanno già una copertina nello storage.
 """
 import asyncio
 import logging
-import mimetypes
 from pathlib import Path
 
-from storage import put_object, get_object, APP_NAME
+from media_opt import source_digest, upload_cover
 
 COVERS_DIR = Path(__file__).parent / "covers"
 logger = logging.getLogger("covers")
@@ -26,30 +25,21 @@ def local_covers() -> dict[str, Path]:
     return out
 
 
-def _exists(path: str) -> bool:
-    try:
-        get_object(path)
-        return True
-    except Exception:
-        return False
-
-
 async def sync_local_covers(db) -> dict:
-    stats = {"uploaded": 0, "linked": 0, "skipped": 0, "unknown": 0}
+    """Idempotent: a cover is re-encoded/uploaded only when the source file
+    changed (digest differs from the one recorded on the story)."""
+    stats = {"uploaded": 0, "skipped": 0, "unknown": 0}
     for sid, file in local_covers().items():
-        doc = await db.stories.find_one({"id": sid}, {"_id": 0, "hero_image_generated": 1})
+        doc = await db.stories.find_one({"id": sid}, {"_id": 0, "hero_source_digest": 1})
         if not doc:
             stats["unknown"] += 1
             logger.warning("cover %s: nessuna storia con questo id", file.name)
             continue
-        mime = mimetypes.guess_type(file.name)[0] or "image/png"
-        ext = "jpg" if "jpeg" in mime else mime.split("/")[-1]
-        path = f"{APP_NAME}/hero/{sid}.{ext}"
-        current = doc.get("hero_image_generated")
-        if current == path and await asyncio.to_thread(_exists, path):
+        raw = file.read_bytes()
+        if doc.get("hero_source_digest") == source_digest(raw):
             stats["skipped"] += 1
             continue
-        await asyncio.to_thread(put_object, path, file.read_bytes(), mime)
-        await db.stories.update_one({"id": sid}, {"$set": {"hero_image_generated": path}})
+        fields = await asyncio.to_thread(upload_cover, sid, raw)
+        await db.stories.update_one({"id": sid}, {"$set": fields})
         stats["uploaded"] += 1
     return stats

@@ -229,7 +229,7 @@ function SavedCard({ story, userId, onPress }: { story: StoryPreview; userId: st
       {isLesson(story) && !story.hero_image_generated ? (
         <LessonCover color={story.category_color} icon={story.category_icon} iconSize={28} showBadge={false} style={styles.thumb} />
       ) : (
-        <Image source={{ uri: heroUrl(story) }} style={styles.thumb} contentFit="cover" transition={200} />
+        <Image source={{ uri: heroUrl(story, "thumb") }} style={styles.thumb} contentFit="cover" transition={200} cachePolicy="memory-disk" />
       )}
       <View style={styles.info}>
         <HighlightedTitle title={story.title} highlight={story.highlight_words} style={styles.cardTitle} highlightColor={colors.brand} numberOfLines={2} />

@@ -80,3 +80,6 @@ memory/test_credentials.md
 
 # Mobile development
 android-sdk/
+# PAUSE — generated media lives in Object Storage; local dirs are serving caches
+backend/tts_cache/
+backend/media_cache/

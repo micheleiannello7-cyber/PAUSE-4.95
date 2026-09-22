@@ -137,7 +137,7 @@ export default function Playlist() {
                   testID={`playlist-item-${s.id}`}
                   style={({ pressed }) => [styles.row, pressed && { opacity: 0.92 }]}
                 >
-                  <StoryHero story={s} style={styles.thumb} iconSize={22} />
+                  <StoryHero story={s} style={styles.thumb} iconSize={22} size="thumb" />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.rowMeta}>
                       {String(i + 2).padStart(2, "0")} · {s.category_name.toUpperCase()}

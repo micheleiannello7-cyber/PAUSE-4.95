@@ -68,7 +68,7 @@ export default function Premium() {
         {/* ---- Hero: ventaglio di copertine su sfondo sfocato ---- */}
         <View style={[styles.hero, { paddingTop: insets.top + 48 }]} testID="paywall-hero">
           {covers[0] ? (
-            <Image source={{ uri: heroUrl(covers[0]) }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
+            <Image source={{ uri: heroUrl(covers[0], "thumb") }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} cachePolicy="memory-disk" />
           ) : null}
           <LinearGradient
             colors={["rgba(5,7,12,0.35)", "rgba(5,7,12,0.55)", colors.surface]}
@@ -86,7 +86,7 @@ export default function Premium() {
                   i === 2 && { transform: [{ rotate: "9deg" }, { translateX: 26 }, { translateY: 10 }] },
                 ]}
               >
-                <Image source={{ uri: heroUrl(s) }} style={StyleSheet.absoluteFill} contentFit="cover" transition={300} />
+                <Image source={{ uri: heroUrl(s, "thumb") }} style={StyleSheet.absoluteFill} contentFit="cover" transition={300} cachePolicy="memory-disk" />
                 <LinearGradient colors={["transparent", "rgba(5,7,12,0.75)"]} style={StyleSheet.absoluteFill} />
                 {i === 1 ? (
                   <View style={styles.fanPlay}>

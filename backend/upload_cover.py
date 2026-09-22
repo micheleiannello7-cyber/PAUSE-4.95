@@ -51,11 +51,19 @@ async def main():
         sys.exit(1)
 
     data, mime = read_source(src)
-    ext = "jpg" if "jpeg" in mime else mime.split("/")[-1]
-    path = f"{APP_NAME}/{folder}/{target_id}.{ext}"
-    put_object(path, data, mime)
-    await db[coll].update_one({"id": target_id}, {"$set": {field: path}})
-    print(f"OK {target_id} -> {path} ({len(data)//1024} KB, {mime})")
+    if is_cat:
+        ext = "jpg" if "jpeg" in mime else mime.split("/")[-1]
+        path = f"{APP_NAME}/{folder}/{target_id}.{ext}"
+        put_object(path, data, mime)
+        await db[coll].update_one({"id": target_id}, {"$set": {field: path}})
+        print(f"OK {target_id} -> {path} ({len(data)//1024} KB, {mime})")
+    else:
+        # Stories: WebP hero + thumb at content-addressed paths (see media_opt).
+        from media_opt import upload_cover
+        fields = upload_cover(target_id, data)
+        await db[coll].update_one({"id": target_id}, {"$set": fields})
+        b = fields["hero_bytes"]
+        print(f"OK {target_id} -> {fields['hero_image_generated']} (source {b['source']//1024} KB → hero {b['hero']//1024} KB, thumb {b['thumb']//1024} KB)")
     client.close()
 
 

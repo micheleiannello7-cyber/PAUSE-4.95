@@ -95,6 +95,7 @@ export type StoryPreview = {
   hook: string;
   hero_image: string;
   hero_image_generated?: string | null;
+  hero_image_thumb?: string | null;
   reading_time_min: number;
   deep_dive_time_min: number;
   kind?: "story" | "lesson";
@@ -171,20 +172,37 @@ export function isLesson(story: StoryPreview | Story): boolean {
   return story.kind === "lesson";
 }
 
-// Prefers AI-generated hero (via /api/media/{id}) with fallback to the
-// curated Unsplash URL.
-export function heroUrl(story: StoryPreview | Story): string {
+// Cover URL. Generated covers come from Object Storage through the backend
+// (content-addressed path → `?v=` makes the URL immutable-cacheable);
+// `size: "thumb"` picks the ≤600px WebP for lists. Curated Unsplash photos
+// are already served by a CDN in WebP/AVIF; we only ask for a smaller width
+// when a thumbnail is enough.
+export function heroUrl(story: StoryPreview | Story, size: "hero" | "thumb" = "hero"): string {
   if (story.hero_image_generated) {
-    return `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/media/${story.id}`;
+    const path = (size === "thumb" && story.hero_image_thumb) || story.hero_image_generated;
+    return `${BASE}/api/media/${story.id}?size=${size}&v=${encodeURIComponent(path)}`;
+  }
+  if (size === "thumb" && story.hero_image.includes("images.unsplash.com")) {
+    return story.hero_image.replace(/([?&])w=\d+/, "$1w=600");
   }
   return story.hero_image;
 }
 
-export function ttsUrl(storyId: string, opts?: { voice?: VoiceId; preview?: boolean }): string {
-  const qs = new URLSearchParams({ lang: currentLang });
-  if (opts?.voice && opts.voice !== FREE_VOICE) qs.set("voice", opts.voice);
-  if (opts?.preview) qs.set("preview", "true");
-  return `${BASE}/api/tts/story/${storyId}?${qs.toString()}`;
+export type TtsStatus = {
+  story_id: string;
+  lang: string;
+  voice: VoiceId;
+  content_hash: string;
+  ready: boolean;
+  generating: boolean;
+  error: string | null; // last generation failure for this combination (recent)
+  key: string | null;
+  size: number | null;
+  url: string; // path under BASE, versioned with the content hash
+};
+
+export function absoluteUrl(path: string): string {
+  return path.startsWith("http") ? path : `${BASE}${path}`;
 }
 
 export function voiceSampleUrl(voice: VoiceId): string {
@@ -247,9 +265,16 @@ export const api = {
     req<{ enforce: boolean; session_count: number; session_seconds: number; limit: number; is_premium: boolean; reached: boolean; blocked: boolean; blocked_until?: string | null; remaining_seconds?: number }>(
       `/user/${user_id}/limit-check`,
     ),
+  ttsStatus: (story_id: string, opts?: { voice?: VoiceId; preview?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.voice && opts.voice !== FREE_VOICE) qs.set("voice", opts.voice);
+    if (opts?.preview) qs.set("preview", "true");
+    const s = qs.toString();
+    return req<TtsStatus>(`/tts/status/${story_id}${s ? "?" + s : ""}`);
+  },
   warmupTts: (story_id: string, voice?: VoiceId) =>
-    req<{ story_id: string; status: string }>(
-      `/tts/warmup/${story_id}${voice && voice !== FREE_VOICE ? `?voice=${voice}` : ""}`,
+    req<{ story_id: string; status: "cached" | "generating"; url: string }>(
+      `/tts/warmup/${story_id}?lang=${currentLang}${voice && voice !== FREE_VOICE ? `&voice=${voice}` : ""}`,
       { method: "POST" },
     ),
 };

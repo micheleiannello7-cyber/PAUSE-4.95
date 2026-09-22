@@ -181,6 +181,7 @@ class Story(BaseModel):
     hook: str
     hero_image: str = ""
     hero_image_generated: Optional[str] = None
+    hero_image_thumb: Optional[str] = None
     reading_time_min: int
     deep_dive_time_min: int
     chapters: List[Chapter]
@@ -201,6 +202,7 @@ class StoryPreview(BaseModel):
     hook: str
     hero_image: str = ""
     hero_image_generated: Optional[str] = None
+    hero_image_thumb: Optional[str] = None
     reading_time_min: int
     deep_dive_time_min: int
     kind: str = "story"
@@ -306,8 +308,8 @@ async def ensure_seed():
     for s in ALL_STORIES:
         existing = await db.stories.find_one(
             {"id": s["id"]},
-            {"_id": 0, "hero_image_generated": 1, "chapters_v6": 1, "chapters": 1, "translations": 1,
-             "reading_time_min": 1, "deep_dive_time_min": 1},
+            {"_id": 0, "hero_image_generated": 1, "hero_image_thumb": 1, "chapters_v6": 1, "chapters": 1, "translations": 1,
+             "reading_time_min": 1, "deep_dive_time_min": 1, "content_trimmed": 1, "hook": 1, "summary": 1},
         )
         payload = {k: v for k, v in s.items()}
         # Two content kinds share one shape: "story" (curiosità) and "lesson"
@@ -315,6 +317,14 @@ async def ensure_seed():
         payload["kind"] = s.get("kind", "story")
         if existing and existing.get("hero_image_generated"):
             payload["hero_image_generated"] = existing["hero_image_generated"]
+            payload["hero_image_thumb"] = existing.get("hero_image_thumb")
+        if existing and existing.get("content_trimmed"):
+            # Editorial trim (trim_stories.py) is the current text: never let
+            # the seed files put the long version back.
+            for k in ("hook", "summary", "chapters", "translations"):
+                if existing.get(k) is not None:
+                    payload[k] = existing[k]
+            payload["chapters_v6"] = True
         if existing and existing.get("chapters_v6"):
             # Chapters were normalized to 6 by normalize_chapters.py: keep them.
             payload["chapters"] = existing["chapters"]
@@ -1189,56 +1199,118 @@ async def content_report():
     }
 
 # --------------------------- media proxy ---------------------------
+# Object Storage has no public/CDN URLs, so the backend fronts every image
+# read with a bounded disk cache (media_cache.py). Storage paths are
+# content-addressed → strong ETag + immutable caching are safe; a changed
+# asset gets a new path (and the client a new `?v=`), never a stale hit.
+
+def _image_response(request: Request, storage_path: str, content: bytes, ctype: str) -> Response:
+    from media_cache import etag_for, IMMUTABLE
+    etag = etag_for(storage_path)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": IMMUTABLE})
+    return Response(content=content, media_type=ctype, headers={"Cache-Control": IMMUTABLE, "ETag": etag})
+
 
 @api_router.get("/media/{story_id}")
-async def media_for_story(story_id: str):
-    """Serve the AI-generated hero image for a story from Object Storage."""
-    doc = await db.stories.find_one({"id": story_id}, {"_id": 0, "hero_image_generated": 1})
+async def media_for_story(request: Request, story_id: str, size: str = Query("hero")):
+    """Serve a story cover (WebP) from Object Storage. `size=thumb` returns the
+    ≤600px variant for lists when available."""
+    doc = await db.stories.find_one({"id": story_id}, {"_id": 0, "hero_image_generated": 1, "hero_image_thumb": 1})
     if not doc or not doc.get("hero_image_generated"):
         raise HTTPException(404, "No generated image")
-    path = doc["hero_image_generated"]
-    from storage import get_object
-    content, ctype = await run_in_threadpool(get_object, path)
-    return Response(content=content, media_type=ctype, headers={
-        "Cache-Control": "public, max-age=31536000, immutable",
-    })
+    path = (doc.get("hero_image_thumb") if size == "thumb" else None) or doc["hero_image_generated"]
+    from media_cache import cached_object
+    content, ctype = await cached_object(path)
+    return _image_response(request, path, content, ctype)
 
 
 @api_router.get("/category-media/{category_id}")
-async def media_for_category(category_id: str):
-    """Serve the AI-generated illustration for a category."""
+async def media_for_category(request: Request, category_id: str):
+    """Serve the illustration for a category."""
     collection = db.design_assets if category_id == "all" else db.categories
     asset_id = "category-all" if category_id == "all" else category_id
     doc = await collection.find_one({"id": asset_id}, {"_id": 0, "illustration_generated": 1})
     if not doc or not doc.get("illustration_generated"):
         raise HTTPException(404, "No generated image")
     path = doc["illustration_generated"]
-    from storage import get_object
-    content, ctype = await run_in_threadpool(get_object, path)
-    return Response(content=content, media_type=ctype, headers={
-        "Cache-Control": "public, max-age=31536000, immutable",
-    })
+    from media_cache import cached_object
+    content, ctype = await cached_object(path)
+    return _image_response(request, path, content, ctype)
+
+
+@api_router.get("/content/assets-report")
+async def content_assets_report():
+    """Metadata-only overview of generated media (no bytes touched)."""
+    from tts import assets_report
+    import media_cache
+    covers = await db.stories.count_documents({"hero_image_generated": {"$nin": [None, ""]}})
+    thumbs = await db.stories.count_documents({"hero_image_thumb": {"$nin": [None, ""]}})
+    total = await db.stories.count_documents({})
+    return {
+        "tts": await assets_report(db),
+        "covers": {"stories": total, "with_cover": covers, "with_thumb": thumbs},
+        "image_disk_cache": media_cache.stats(),
+    }
 
 # --------------------------- tts (nova / tts-1-hd) ---------------------------
 
-@api_router.post("/tts/warmup/{story_id}")
-async def tts_warmup(story_id: str, lang: Optional[str] = Query("it"), voice: Optional[str] = Query(None)):
-    """Kick off TTS generation for a story so it's cached by the time the user
-    opens the deep-dive. Returns immediately; the file is written in the
-    background. Idempotent: if the audio already exists this is a no-op.
-    """
+def _tts_url(story_id: str, lang: str, voice: str, preview: bool, chash: str) -> str:
+    from urllib.parse import urlencode
+    from tts import VOICE
+    q = {"lang": lang}
+    if voice != VOICE:
+        q["voice"] = voice
+    if preview:
+        q["preview"] = "true"
+    q["v"] = chash
+    return f"/api/tts/story/{story_id}?{urlencode(q)}"
+
+
+@api_router.get("/tts/status/{story_id}")
+async def tts_status_for_story(
+    story_id: str, lang: Optional[str] = Query("it"), voice: Optional[str] = Query(None), preview: bool = Query(False),
+):
+    """Is the narration for this story+lang+voice+content already generated?
+    Never triggers generation — the player uses it to decide whether to load
+    the persistent URL right away or ask for a warm-up first."""
     doc = await db.stories.find_one({"id": story_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Story not found")
-    localized = _localize(doc, _lang(lang))
-    from tts import generate_story_audio, is_cached, resolve_voice
+    from tts import asset_status, last_failure, resolve_voice
     resolved_lang = _lang(lang)
     v = resolve_voice(voice)
-    if is_cached(story_id, resolved_lang, "full", v):
-        return {"story_id": story_id, "status": "cached", "voice": v}
-    # Fire and forget: the coroutine caches the file when it finishes.
-    asyncio.create_task(generate_story_audio(localized, resolved_lang, preview=False, db=db, voice=v))
-    return {"story_id": story_id, "status": "generating", "voice": v}
+    kind = "preview" if preview else "full"
+    asset, chash, generating = await asset_status(db, _localize(doc, resolved_lang), resolved_lang, v, kind)
+    return {
+        "story_id": story_id, "lang": resolved_lang, "voice": v, "content_hash": chash,
+        "ready": asset is not None, "generating": generating,
+        "error": None if asset else last_failure(story_id, resolved_lang, v, kind, chash),
+        "key": asset["key"] if asset else None, "size": asset.get("size") if asset else None,
+        "provider": asset.get("provider") if asset else None,
+        "url": _tts_url(story_id, resolved_lang, v, preview, chash),
+    }
+
+
+@api_router.post("/tts/warmup/{story_id}")
+async def tts_warmup(story_id: str, lang: Optional[str] = Query("it"), voice: Optional[str] = Query(None)):
+    """Kick off TTS generation for a story. Returns immediately; the file is
+    written in the background. Idempotent: if the audio already exists (for
+    this exact content version) nothing is generated."""
+    doc = await db.stories.find_one({"id": story_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Story not found")
+    from tts import asset_status, generate_story_audio, resolve_voice
+    resolved_lang = _lang(lang)
+    v = resolve_voice(voice)
+    localized = _localize(doc, resolved_lang)
+    asset, chash, generating = await asset_status(db, localized, resolved_lang, v, "full")
+    if asset:
+        return {"story_id": story_id, "status": "cached", "voice": v, "url": _tts_url(story_id, resolved_lang, v, False, chash)}
+    if not generating:
+        # Fire and forget: the coroutine registers the asset when it finishes.
+        asyncio.create_task(generate_story_audio(localized, resolved_lang, preview=False, db=db, voice=v))
+    return {"story_id": story_id, "status": "generating", "voice": v, "url": _tts_url(story_id, resolved_lang, v, False, chash)}
 
 
 @api_router.get("/tts/voices")
@@ -1259,7 +1331,7 @@ async def tts_voice_sample(request: Request, voice: str = Query("nova"), lang: O
     return _range_response(path, request)
 
 
-def _range_response(path: Path, request: Request) -> Response:
+def _range_response(path: Path, request: Request, etag: Optional[str] = None, immutable: bool = True) -> Response:
     """Serve a file with HTTP Range support so expo-audio can scrub.
 
     Starlette 0.37 FileResponse ignores the Range header and always returns
@@ -1267,13 +1339,20 @@ def _range_response(path: Path, request: Request) -> Response:
     (the browser can only jump to already-buffered bytes). We handle 206
     partial-content ourselves; without a Range header we fall back to the
     plain FileResponse.
+
+    `etag` is the asset key (content-addressed) → conditional requests get a
+    304 and the body is only cacheable "forever" when the URL is versioned.
     """
     file_size = path.stat().st_size
     range_header = request.headers.get("range") or request.headers.get("Range")
     common_headers = {
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control": "public, max-age=31536000, immutable" if immutable else "public, max-age=3600",
         "Accept-Ranges": "bytes",
     }
+    if etag:
+        common_headers["ETag"] = f'"{etag}"'
+        if request.headers.get("if-none-match") == f'"{etag}"':
+            return Response(status_code=304, headers=common_headers)
     if not range_header or not range_header.startswith("bytes="):
         return FileResponse(str(path), media_type="audio/mpeg", headers=common_headers)
 
@@ -1318,25 +1397,36 @@ async def tts_story(
     lang: Optional[str] = Query("it"),
     preview: bool = Query(False),
     voice: Optional[str] = Query(None),
+    v: Optional[str] = Query(None),
 ):
-    """Serve the AI-narrated audio for a story (model=tts-1-hd; voice=nova by
-    default, onyx/echo/shimmer for Premium listeners).
+    """Serve the narrated audio for a story (voice=nova by default,
+    onyx/echo/shimmer for Premium listeners).
 
-    Uses a custom Range-aware handler so expo-audio can seek via HTTP 206.
-    Generation is cached to disk under tts_cache/ — first hit is slower,
-    later ones are instant.
+    `v` is the content hash returned by /tts/status — it only versions the URL
+    (safe long-lived caching); the asset itself is resolved from the current
+    story text, so the same content is never generated twice.
     """
     doc = await db.stories.find_one({"id": story_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Story not found")
     localized = _localize(doc, _lang(lang))
-    from tts import generate_story_audio, resolve_voice
+    from tts import asset_status, generate_story_audio, resolve_voice
+    resolved_lang = _lang(lang)
+    rv = resolve_voice(voice)
+    kind = "preview" if preview else "full"
+    asset, chash, _ = await asset_status(db, localized, resolved_lang, rv, kind)
+    etag = asset["key"] if asset else None
+    if etag and request.headers.get("if-none-match") == f'"{etag}"':
+        return Response(status_code=304, headers={"ETag": f'"{etag}"', "Accept-Ranges": "bytes"})
     try:
-        path = await generate_story_audio(localized, _lang(lang), preview=preview, db=db, voice=resolve_voice(voice))
+        path = await generate_story_audio(localized, resolved_lang, preview=preview, db=db, voice=rv)
     except Exception as exc:
         logger.exception("TTS generation failed for %s: %s", story_id, exc)
         raise HTTPException(502, f"TTS generation failed: {exc}")
-    return _range_response(path, request)
+    if etag is None:
+        fresh, _, _ = await asset_status(db, localized, resolved_lang, rv, kind)
+        etag = fresh["key"] if fresh else None
+    return _range_response(path, request, etag=etag, immutable=v == chash)
 
 
 @api_router.get("/tts/random-preview")
@@ -1385,21 +1475,24 @@ async def startup_event():
     await ensure_seed()
     from category_artwork import ensure_category_artwork
     await ensure_category_artwork(db)
-    # Copertine fornite dall'utente in backend/covers/<id>.<ext>: caricate nello
-    # storage e collegate alla storia (idempotente, sopravvive ai fork).
+    # Copertine fornite dall'utente in backend/covers/<id>.<ext>: ottimizzate in
+    # WebP, caricate nello storage e collegate alla storia (idempotente).
     try:
         from covers_sync import sync_local_covers
         logger.info("Local covers sync: %s", await sync_local_covers(db))
     except Exception:
         logger.exception("Local covers sync failed")
-    # Migrate any pre-existing disk cache into Object Storage so audio files
-    # carry over across deploys / project downloads. Runs once, idempotent.
+    # Audio assets: metadata indexes, then adopt every legacy mp3 (disk or
+    # storage) into `tts_assets` so it is reused instead of regenerated.
     try:
-        from tts import ingest_disk_cache_into_storage
-        result = await ingest_disk_cache_into_storage(db)
-        logger.info("TTS disk→storage ingest: %s", result)
+        from tts import ensure_indexes, ingest_disk_cache_into_storage, adopt_legacy_assets
+        await ensure_indexes(db)
+        logger.info("TTS disk→storage ingest: %s", await ingest_disk_cache_into_storage(db))
+        docs = await db.stories.find({}, {"_id": 0}).to_list(5000)
+        localized = [(lang, _localize(d, lang)) for d in docs for lang in SUPPORTED_LANGS]
+        logger.info("TTS legacy adoption: %s", await adopt_legacy_assets(db, localized))
     except Exception:
-        logger.exception("TTS disk→storage ingest failed")
+        logger.exception("TTS asset migration failed")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 26 asset layer — 18/18 pytest cases PASS (100%). All TTS status/warmup/ETag/Range/304 behaviors verified against cached combinations (moon-tides IT/EN, sky-blue-sunset-orange EN). tts.assets count remained 27 after non-versioned GET (no duplicate generation). category-media/spazio and /all return webp with ETag + 304; /api/media/moon-tides and /nonexistent return 404. assets-report has covers.stories == 437. Stories trimmed: v8-why-is-fire-hot… → reading_time_min==4 and 6 chapters for both IT and EN; moon-tides has hero_image_thumb field. Regression: 12 categories with illustration_generated, /api/stories?limit=5 200, /api/health 200. FRONTEND (390x844): /deep-dive/moon-tides shows a 'Listen' button, tap starts audio within ~8s, audio request URL contains &v=<hash>; NO /api/tts/warmup call was made before the tap (only /api/tts/status). Audio sheet (audio-trigger → audio-sheet → audio-play-toggle) toggles play/pause; audio-expand-toggle reveals audio-back-10 and audio-fwd-10 which work. Discover/Explore/Saved render without red overlays; 12 category-media webp illustrations load; hero card requests Unsplash w=1200. FINDING: BottomFloatingMini (which owns testID 'audio-mini-play-toggle') is exported from story-audio-player but NOT imported/rendered in deep-dive/[id].tsx or elsewhere in /app/frontend/app — so the requested testID audio-mini-play-toggle does not exist in the running UI. The chip labeled '0:07/pause' in the reader is 'audio-trigger-<n>' (opens the AudioSheet) rather than a mini toggle.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "BottomFloatingMini",
+        "issue": "Component exported from src/components/story-audio-player/mini.tsx (testID audio-mini-play-toggle, audio-mini-back-10, audio-mini-fwd-10, audio-mini-bar) is not imported or rendered by app/deep-dive/[id].tsx or any other screen. If a bottom floating mini pill is intended for the reader page, it needs to be mounted (with the scrollY SharedValue) inside the deep-dive scroll container.",
+        "testID": "audio-mini-play-toggle",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter26_asset_layer.py",
+    "/app/test_reports/pytest/iter26_results.xml"
+  ],
+  "action_items": [
+    "Decide whether the reader page should actually render <BottomFloatingMini/> (currently unused). If yes, mount it inside deep-dive/[id].tsx and pass the reader scrollY SharedValue so testID audio-mini-play-toggle becomes reachable. If no, remove the mini component and adjust the review checklist.",
+    "Optional cleanup: minor deprecation console warnings ('textShadow*' shorthand and 'props.pointerEvents') coming from RN Web / Reanimated on the deep-dive screen — not blocking, but worth addressing in a follow-up."
+  ],
+  "critical_code_review_comments": [
+    "src/components/story-audio-player/mini.tsx exports BottomFloatingMini but nothing imports it (dead code in the shipped app).",
+    "Backend TTS status/asset flow is well-guarded: the non-versioned GET on /api/tts/story/moon-tides?lang=it correctly reused the existing asset (tts.assets stayed at 27) confirming the cost-guard.",
+    "Range/ETag/304 headers on /api/tts/story are correct even though the preview gateway rewrites Cache-Control to no-store."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter26_asset_layer.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18)",
+    "frontend": "~90% (all flows OK except the audio-mini-play-toggle testID which is not mounted in the UI)"
+  },
+  "seed_data_creation": "None — used pre-existing cached TTS assets (moon-tides IT/EN nova, sky-blue-sunset-orange IT/EN nova, why-we-yawn EN onyx). No new TTS generation triggered.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend test file to reuse: /app/backend/tests/test_iter26_asset_layer.py. Base URL comes from /app/frontend/.env EXPO_PUBLIC_BACKEND_URL. IMPORTANT env constraint: preview gateway strips Cache-Control (rewrites to no-store) — validate ETag/Range/304 instead. LLM budget for TTS generation on NEW combinations is exhausted; do NOT trigger warmup for uncached combinations (only moon-tides IT/EN, sky-blue-sunset-orange IT/EN, why-we-yawn EN onyx are cached). The frontend uses lazy-generation: /api/tts/warmup is only invoked when user taps Listen — a raw open of /deep-dive/moon-tides only calls /api/tts/status (verified via request interception).",
+  "rca_of_issue": "N/A — all backend tests pass; only a UI wiring gap for BottomFloatingMini (see action_items). This is a design/wiring decision for the main agent, not a bug that broke the current flows."
+}

@@ -15,7 +15,7 @@ export function RecapCard({ story, index }: { story: StoryRecap; index: number }
   return (
     <View style={styles.card} testID={`recap-${story.id}`}>
       <View style={styles.head}>
-        <StoryHero story={story} style={styles.thumb} iconSize={22} />
+        <StoryHero story={story} style={styles.thumb} iconSize={22} size="thumb" />
         <View style={{ flex: 1 }}>
           <Text style={styles.meta}>{index} · {story.category_name.toUpperCase()}</Text>
           <Text style={styles.title} numberOfLines={2}>{story.title}</Text>

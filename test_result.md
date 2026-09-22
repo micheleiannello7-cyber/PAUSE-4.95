@@ -101,3 +101,35 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration 26 — Asset layer (TTS assets, media cache, lazy player)
+user_problem_statement: "Gestione ottimizzata degli asset multimediali: audio generato una sola volta per storia+lingua+voce+versione, URL persistenti, Mongo solo metadati, caching, copertine remote WebP, nessuna chiamata TTS duplicata; poi limatura storie a max 4 min."
+backend:
+  - task: "tts_assets content-hashed asset layer + legacy adoption"
+    implemented: true
+    working: "NA"
+    file: "backend/tts.py"
+    comment: "26 legacy mp3 adopted (source=adopted, legacy_key). Offline unit tests tests/test_tts_assets_cost_guard.py pass (4/4)."
+  - task: "GET /api/tts/status/{id}, POST /api/tts/warmup (lang-aware), GET /api/tts/story ETag/304/Range/immutable-when-v"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+  - task: "/api/media/{id}?size=thumb + /api/category-media with disk cache + ETag/304"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py, backend/media_cache.py"
+  - task: "GET /api/content/assets-report"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+frontend:
+  - task: "Player resolves audio via /tts/status; generation only on Play tap; polling; unavailable state; native audio cache"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/components/story-audio-player/context.tsx, frontend/src/audio-cache.ts"
+  - task: "heroUrl thumb variants + cachePolicy memory-disk; StoryHero size prop"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/api.ts, frontend/src/components/story-hero.tsx"
+notes:
+  - "Universal LLM key chat budget is exhausted (trim_stories.py blocked); TTS generation for NEW combos may fail → status.error set, player shows 'Audio non disponibile'. Cached: moon-tides (it+en nova), why-we-yawn (en onyx), sky-blue-sunset-orange (it+en nova)."
+  - "Preview gateway rewrites Cache-Control to no-store (known env constraint); check ETag/304 and Accept-Ranges instead."

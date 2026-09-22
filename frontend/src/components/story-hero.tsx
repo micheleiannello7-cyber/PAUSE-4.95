@@ -10,16 +10,23 @@ import { StoryPreview, hasHero, heroUrl } from "@/src/api";
 import { makeStyles, spacing } from "@/src/theme";
 
 export function StoryHero({
-  story, style, iconSize = 64, transition = 200,
+  story, style, iconSize = 64, transition = 200, size = "hero",
 }: {
   story: StoryPreview;
   style?: StyleProp<ViewStyle>;
   iconSize?: number;
   transition?: number;
+  /** "thumb" requests the ≤600px variant for list thumbnails. */
+  size?: "hero" | "thumb";
 }) {
   const styles = useStyles();
   if (hasHero(story)) {
-    return <Image source={{ uri: heroUrl(story) }} style={style} contentFit="cover" transition={transition} />;
+    return (
+      <Image
+        source={{ uri: heroUrl(story, size) }} style={style} contentFit="cover" transition={transition}
+        cachePolicy="memory-disk" recyclingKey={`${story.id}:${size}`}
+      />
+    );
   }
   const color = story.category_color;
   return (

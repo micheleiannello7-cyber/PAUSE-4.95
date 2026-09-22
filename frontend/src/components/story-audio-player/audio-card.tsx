@@ -26,7 +26,9 @@ export function AudioCard({ compact = false, dense = false, testID }: { compact?
   compact = compact || dense;
 
   const voiceName = (v: VoiceId) => t[`voice_${v}` as const].split(" · ")[0];
-  const subtitle = a.resumeFrom !== null && !a.playing && a.position < a.resumeFrom + 1
+  const subtitle = a.unavailable ? t.audio_unavailable
+    : a.buffering && !a.isLoaded && !a.playing ? t.audio_preparing
+    : a.resumeFrom !== null && !a.playing && a.position < a.resumeFrom + 1
     ? t.audio_resume_from(fmt(a.resumeFrom))
     : a.preview ? t.audio_preview_label : dense ? voiceName(a.voice) : `${t.audio_full} · ${voiceName(a.voice)}`;
 
