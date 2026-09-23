@@ -9,10 +9,11 @@ import MaterialDesignIcons from "@react-native-vector-icons/material-design-icon
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 
+import * as Haptics from "expo-haptics";
+
 import { api } from "@/src/api";
-import { makeStyles, useTheme, spacing, typography, radius } from "@/src/theme";
+import { makeStyles, useTheme, spacing, typography, radius, withAlpha } from "@/src/theme";
 import { getOrCreateUserId, setOnboarded } from "@/src/session";
-import { GradientButton } from "@/src/components/gradient-button";
 import { CategoryGrid, toggleInterest } from "@/src/components/category-grid";
 import { PagerDots } from "@/src/components/pager";
 import { useI18n } from "@/src/i18n";
@@ -240,13 +241,30 @@ export default function Onboarding() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
         <PagerDots count={2} index={1} style={styles.dots} testID="onboarding-dots" />
-        <GradientButton
-          label={t.onb_cta}
-          onPress={onContinue}
-          disabled={!canContinue}
-          loading={saving}
+        <Pressable
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            onContinue();
+          }}
+          disabled={!canContinue || saving}
           testID="onboarding-continue"
-        />
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.ctaBtn,
+            { opacity: canContinue ? 1 : 0.45 },
+            canContinue && styles.ctaBtnActive,
+            pressed && styles.ctaPressed,
+          ]}
+        >
+          {saving ? (
+            <ActivityIndicator color={colors.cyan} />
+          ) : (
+            <>
+              <Text style={styles.ctaText}>{t.onb_cta}</Text>
+              <Ionicons name="arrow-forward" size={18} color={colors.cyan} />
+            </>
+          )}
+        </Pressable>
       </View>
     </View>
   );
@@ -330,6 +348,18 @@ const useStyles = makeStyles((colors) => ({
   title: { color: colors.onSurface, fontFamily: typography.displayBold, fontSize: 22, lineHeight: 27, marginBottom: spacing.xs },
   subtitle: { color: colors.muted, fontFamily: typography.body, fontSize: 13, lineHeight: 18, marginBottom: spacing.lg },
   dots: { alignSelf: "center", marginBottom: spacing.md },
+  ctaBtn: {
+    minHeight: 56, borderRadius: radius.lg, overflow: "hidden",
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm,
+    backgroundColor: colors.artworkSurface,
+    borderWidth: 1.5, borderColor: colors.glassBorderStrong,
+  },
+  ctaBtnActive: {
+    borderColor: withAlpha(colors.cyan, 0.67),
+    boxShadow: `0px 0px 14px ${colors.cyanGlow}` as any,
+  },
+  ctaPressed: { opacity: 0.86, transform: [{ scale: 0.99 }] },
+  ctaText: { color: colors.onGradient, fontFamily: typography.bodyBold, fontSize: 16 },
   footer: {
     paddingHorizontal: spacing.xl, paddingTop: spacing.md,
     backgroundColor: colors.surface,
